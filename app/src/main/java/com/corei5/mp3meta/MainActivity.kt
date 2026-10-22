@@ -1,6 +1,15 @@
 package com.corei5.mp3meta
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -64,7 +73,7 @@ data class Album(val id: String, val name: String, val artist: String, val cover
 // ---------- работа с тегами ----------
 object Tags {
     private fun copy(c: Context, u: Uri): File {
-        val f = File.createTempFile("w", ".mp3", c.cacheDir)
+        val f = File.createTempFile("edit", ".mp3", c.cacheDir)
         c.contentResolver.openInputStream(u)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
         return f
     }
@@ -100,6 +109,7 @@ object Tags {
             }
             af.commit()
             c.contentResolver.openOutputStream(u, "wt")!!.use { o -> f.inputStream().use { it.copyTo(o) } }
+            if (u.scheme == "file") MediaScannerConnection.scanFile(c, arrayOf(u.path), null, null)
         } finally { f.delete() }
     }
 }
@@ -159,7 +169,7 @@ class Store(val c: Context) {
         }
     }
 
-    private fun name(u: Uri): String = c.contentResolver.query(u, null, null, null, null)?.use {
+    private fun name(u: Uri): String = if (u.scheme == "file") File(u.path!!).name else c.contentResolver.query(u, null, null, null, null)?.use {
         if (it.moveToFirst()) it.getString(it.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)) else null
     } ?: "track.mp3"
 }
@@ -223,16 +233,11 @@ class MainActivity : ComponentActivity() {
     var tab by remember { mutableIntStateOf(0) }
     var et by remember { mutableStateOf<Track?>(null) }
     var ea by remember { mutableStateOf<Album?>(null) }
-    BackHandler(et != null || ea != null) { et = null; ea = null }
-    val pick = rememberLauncherForActivityResult(PickAudio()) { uris ->
-        uris.forEach {
-            try { c.contentResolver.takePersistableUriPermission(it, 3) }
-            catch (e: Exception) { try { c.contentResolver.takePersistableUriPermission(it, 1) } catch (e2: Exception) { } }
-        }
-        st.add(uris)
-    }
+    BackHandler(et != null || ea != null || picking) { et = null; ea = null; picking = false }
+    var picking by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
         when {
+            picking -> Picker(st) { picking = false }
             et != null -> TrackEditor(et!!) { et = null }
             ea != null -> AlbumEditor(st, ea!!) { ea = null }
             else -> {
@@ -247,7 +252,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 when (tab) {
-                    0 -> Tracks(st, { et = it }) { pick.launch(arrayOf("*/*")) }
+                    0 -> Tracks(st, { et = it }) { picking = true }
                     1 -> Albums(st) { ea = it }
                     else -> Settings()
                 }
@@ -393,7 +398,68 @@ class MainActivity : ComponentActivity() {
         Text("о приложении", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
         Column(Modifier.fillMaxWidth().background(Accents[0]).padding(16.dp)) {
             Text("MP3 Теги", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Light)
-            Text("версия 1.1", color = Color.LightGray, fontSize = 14.sp)
+            Text("версия 1.2", color = Color.LightGray, fontSize = 14.sp)
+        }
+    }
+}
+
+fun hasAccess(c: Context): Boolean =
+    if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+    else c.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+        c.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+fun scanMp3(): List<File> = Environment.getExternalStorageDirectory().walkTopDown()
+    .onEnter { it.name != "Android" && !it.name.startsWith(".") }
+    .filter { it.isFile && it.extension.equals("mp3", true) }
+    .sortedByDescending { it.lastModified() }.toList()
+
+@Composable fun Picker(st: Store, close: () -> Unit) {
+    val c = LocalContext.current
+    var ok by remember { mutableStateOf(hasAccess(c)) }
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val ob = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) ok = hasAccess(c) }
+        owner.lifecycle.addObserver(ob)
+        onDispose { owner.lifecycle.removeObserver(ob) }
+    }
+    val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { ok = hasAccess(c) }
+    var files by remember { mutableStateOf<List<File>?>(null) }
+    var q by remember { mutableStateOf("") }
+    val sel = remember { mutableStateListOf<File>() }
+    LaunchedEffect(ok) { if (ok) files = withContext(Dispatchers.IO) { scanMp3() } }
+    Column(Modifier.fillMaxSize()) {
+        Head("музыка")
+        if (!ok) {
+            Text("Нужен доступ к памяти, чтобы показать твою музыку.", color = Color.LightGray, fontSize = 16.sp)
+            MButton("дать доступ", Accents[0], Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    c.startActivity(
+                        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${c.packageName}"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } else perm.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+            }
+        } else if (files == null) {
+            Text("ищу mp3…", color = Color.Gray, fontSize = 16.sp)
+        } else {
+            F("поиск", q) { q = it }
+            val list = files!!.filter { q.isBlank() || it.name.contains(q, true) }
+            LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
+                items(list) { f ->
+                    val i = sel.indexOf(f)
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                            .background(if (i >= 0) Accents[2] else Dark)
+                            .clickable { if (i >= 0) sel.remove(f) else sel.add(f) }.padding(14.dp)
+                    ) {
+                        Text(f.name, color = Color.White, fontSize = 18.sp, maxLines = 1)
+                        Text(f.parentFile?.name ?: "", color = if (i >= 0) Color.White else Color.Gray, fontSize = 12.sp)
+                    }
+                }
+            }
+            MButton("добавить (${sel.size})", Accents[2], Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                st.add(sel.map { Uri.fromFile(it) }); close()
+            }
         }
     }
 }
