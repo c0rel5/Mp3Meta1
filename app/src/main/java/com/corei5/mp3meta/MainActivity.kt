@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity() {
                 when (tab) {
                     0 -> Tracks(st, { et = it }) { picking = true }
                     1 -> Albums(st) { ea = it }
-                    else -> Settings()
+                    else -> SettingsTab()
                 }
             }
         }
@@ -385,7 +385,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable fun Settings() {
+@Composable fun SettingsTab() {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text("автор", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
         Row(Modifier.fillMaxWidth().background(Dark)) {
