@@ -1,6 +1,7 @@
 package com.corei5.mp3meta
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -22,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,7 +78,7 @@ object Tags {
                 t.getFirst(FieldKey.ALBUM_ARTIST), t.getFirst(FieldKey.YEAR), t.getFirst(FieldKey.GENRE),
                 t.getFirst(FieldKey.TRACK), t.firstArtwork?.binaryData
             )
-        } catch (e: Exception) { Meta() } finally { f.delete() }
+        } finally { f.delete() }
     }
 
     fun write(c: Context, u: Uri, m: Meta, setCover: Boolean) {
@@ -139,8 +142,19 @@ class Store(val c: Context) {
     fun add(uris: List<Uri>) = CoroutineScope(Dispatchers.IO).launch {
         uris.forEach { u ->
             if (tracks.none { it.uri == u }) {
-                val m = Tags.read(c, u); val n = name(u)
-                withContext(Dispatchers.Main) { tracks.add(Track(u, n, m)) }
+                val n = try { name(u) } catch (e: Throwable) { "track.mp3" }
+                if (!n.endsWith(".mp3", true)) {
+                    withContext(Dispatchers.Main) { toast(c, "Не mp3: $n") }
+                    return@forEach
+                }
+                val t = Track(u, n, Meta())
+                withContext(Dispatchers.Main) { tracks.add(t) }
+                try {
+                    val m = Tags.read(c, u)
+                    withContext(Dispatchers.Main) { t.m = m }
+                } catch (e: Throwable) {
+                    withContext(Dispatchers.Main) { toast(c, "Теги не прочитались: ${e.message}") }
+                }
             }
         }
     }
@@ -153,6 +167,14 @@ class Store(val c: Context) {
 // ---------- Metro UI ----------
 val Accents = listOf(0xFF0050EF, 0xFFD80073, 0xFF60A917, 0xFFFA6800, 0xFF00ABA9, 0xFFAA00FF).map { Color(it) }
 val Dark = Color(0xFF1F1F1F)
+
+class PickAudio : ActivityResultContracts.OpenMultipleDocuments() {
+    override fun createIntent(context: Context, input: Array<String>): Intent =
+        super.createIntent(context, input).addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        )
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(s: Bundle?) {
@@ -202,8 +224,11 @@ class MainActivity : ComponentActivity() {
     var et by remember { mutableStateOf<Track?>(null) }
     var ea by remember { mutableStateOf<Album?>(null) }
     BackHandler(et != null || ea != null) { et = null; ea = null }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        uris.forEach { try { c.contentResolver.takePersistableUriPermission(it, 3) } catch (e: Exception) { } }
+    val pick = rememberLauncherForActivityResult(PickAudio()) { uris ->
+        uris.forEach {
+            try { c.contentResolver.takePersistableUriPermission(it, 3) }
+            catch (e: Exception) { try { c.contentResolver.takePersistableUriPermission(it, 1) } catch (e2: Exception) { } }
+        }
         st.add(uris)
     }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
@@ -212,17 +237,20 @@ class MainActivity : ComponentActivity() {
             ea != null -> AlbumEditor(st, ea!!) { ea = null }
             else -> {
                 Text("MP3 ТЕГИ", color = Color.White, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
-                Row {
-                    listOf("треки", "альбомы").forEachIndexed { i, t ->
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    listOf("треки", "альбомы", "настройки").forEachIndexed { i, t ->
                         Text(
-                            t, fontSize = 40.sp, fontWeight = FontWeight.Light,
+                            t, fontSize = 34.sp, fontWeight = FontWeight.Light,
                             color = if (tab == i) Color.White else Color(0xFF666666),
                             modifier = Modifier.clickable { tab = i }.padding(end = 20.dp, bottom = 8.dp)
                         )
                     }
                 }
-                if (tab == 0) Tracks(st, { et = it }) { pick.launch(arrayOf("audio/mpeg")) }
-                else Albums(st) { ea = it }
+                when (tab) {
+                    0 -> Tracks(st, { et = it }) { pick.launch(arrayOf("*/*")) }
+                    1 -> Albums(st) { ea = it }
+                    else -> Settings()
+                }
             }
         }
     }
@@ -348,6 +376,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable fun Settings() {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text("автор", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
+        Row(Modifier.fillMaxWidth().background(Dark)) {
+            Image(painterResource(R.drawable.avatar), null, Modifier.size(120.dp), contentScale = ContentScale.Crop)
+            Column(Modifier.padding(16.dp).align(Alignment.CenterVertically)) {
+                Text("corei5", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.Light)
+                Text("создатель", color = Color.Gray, fontSize = 14.sp)
+            }
+        }
+        Text("о приложении", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp))
+        Column(Modifier.fillMaxWidth().background(Accents[0]).padding(16.dp)) {
+            Text("MP3 Теги", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Light)
+            Text("версия 1.1", color = Color.LightGray, fontSize = 14.sp)
         }
     }
 }
