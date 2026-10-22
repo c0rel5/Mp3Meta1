@@ -233,8 +233,8 @@ class MainActivity : ComponentActivity() {
     var tab by remember { mutableIntStateOf(0) }
     var et by remember { mutableStateOf<Track?>(null) }
     var ea by remember { mutableStateOf<Album?>(null) }
-    BackHandler(et != null || ea != null || picking) { et = null; ea = null; picking = false }
     var picking by remember { mutableStateOf(false) }
+    BackHandler(et != null || ea != null || picking) { et = null; ea = null; picking = false }
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 16.dp)) {
         when {
             picking -> Picker(st) { picking = false }
